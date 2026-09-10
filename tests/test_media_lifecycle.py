@@ -756,7 +756,8 @@ async def test_text_layout_keeps_retweet_quote_and_translation_paragraphs(
 
 
 @pytest.mark.asyncio
-async def test_screenshot_failure_falls_back_to_text(plugin_module):
+@pytest.mark.parametrize("mode", ["screenshot", "both"])
+async def test_screenshot_failure_falls_back_to_text(plugin_module, mode):
     async def html_render(*_args, **_kwargs):
         raise RuntimeError("render unavailable")
 
@@ -766,7 +767,7 @@ async def test_screenshot_failure_falls_back_to_text(plugin_module):
         html_render,
         _message_settings(
             plugin_module,
-            text_render_mode="screenshot",
+            text_render_mode=mode,
             pre_download_media=False,
             proxy=None,
         ),
@@ -785,6 +786,60 @@ async def test_screenshot_failure_falls_back_to_text(plugin_module):
     assert len(chain) == 1
     assert isinstance(chain[0], Plain)
     assert "fallback text" in chain[0].text
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_both_mode_config_supports_flat_and_grouped(plugin_module, monkeypatch, grouped):
+    monkeypatch.setattr(plugin_module, "TwitterAPI", lambda **kwargs: object())
+    config = {"twitter_text_render_mode": "both"}
+    if grouped:
+        config = {"message_format": config}
+    plugin = plugin_module.TwitterPlugin(object(), config)
+    assert plugin.text_render_mode == "both"
+    assert plugin.message_service.settings.text_render_mode == "both"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("send_media", [False, True])
+@pytest.mark.parametrize("no_text", [False, True])
+async def test_both_mode_text_screenshot_and_media(
+    plugin_module, send_media, no_text,
+):
+    render_calls = []
+
+    async def html_render(_template, context, options):
+        render_calls.append(context)
+        return "https://example.com/screenshot.png"
+
+    service = plugin_module.TweetMessageService(
+        object(), object(), html_render,
+        _message_settings(
+            plugin_module, text_render_mode="both", no_text=no_text,
+            send_media_separately=send_media, include_tweet_link=True,
+            pre_download_media=False, proxy=None,
+        ),
+    )
+    tweet = {
+        "username": "tester", "tweet_id": "123", "text": "original",
+        "images": ["https://example.com/photo.jpg"],
+        "quote": {"username": "quoted", "text": "quote text"},
+    }
+    chain = await service.build_message_chain(
+        "tester", tweet, translated_text="正文译文", translate_model="model",
+    )
+    assert isinstance(chain[0], Plain)
+    assert ("正文译文" in chain[0].text) is (not no_text)
+    assert "quote text" in chain[0].text
+    assert "model" in chain[0].text
+    assert sum(
+        c.text.count("https://x.com/tester/status/123")
+        for c in chain if isinstance(c, Plain)
+    ) == 1
+    expected_images = [] if no_text else ["https://example.com/screenshot.png"]
+    if send_media:
+        expected_images.append("https://example.com/photo.jpg")
+    assert [c.file for c in chain if isinstance(c, Image)] == expected_images
+    assert len(render_calls) == (0 if no_text else 1)
 
 
 @pytest.mark.asyncio

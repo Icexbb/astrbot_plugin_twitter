@@ -221,7 +221,7 @@ class TwitterPlugin(Star):
             )
             or "text"
         ).strip().lower()
-        if self.text_render_mode not in ("text", "screenshot"):
+        if self.text_render_mode not in ("text", "screenshot", "both"):
             logger.warning(
                 f"未知推文文本渲染模式: {self.text_render_mode}，已回退为 text"
             )

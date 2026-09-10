@@ -552,7 +552,7 @@ class TweetMessageService:
         translate_model: str | None = None,
     ) -> list:
         """按当前文本渲染模式构建推文消息链。"""
-        if self.settings.text_render_mode != "screenshot":
+        if self.settings.text_render_mode not in ("screenshot", "both"):
             return await self.build_tweet_chain(
                 username,
                 tweet_info,
@@ -614,6 +614,17 @@ class TweetMessageService:
             if image_comp is None:
                 raise RuntimeError("html_render returned an empty image result")
             chain.append(image_comp)
+
+        if self.settings.text_render_mode == "both":
+            text_chain = await self.build_tweet_chain(
+                username,
+                tweet_info,
+                sub_config,
+                translated_text=translated_text,
+                translate_model=translate_model,
+            )
+            # 文本模式首个组件为完整正文，截图置于正文与附加媒体之间。
+            return text_chain[:1] + chain + text_chain[1:]
 
         link_comp = self.tweet_link_component(tweet_info, username)
         if link_comp is not None:

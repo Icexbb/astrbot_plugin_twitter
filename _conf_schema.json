@@ -68,15 +68,15 @@
         "description": "推文正文渲染方式",
         "type": "string",
         "default": "text",
-        "options": ["text", "screenshot"],
-        "hint": "text=普通文字推送；screenshot=使用 AstrBot html_render 渲染 X 官方暗色时间线风格截图"
+        "options": ["text", "screenshot", "both"],
+        "hint": "text=普通文字推送；screenshot=使用 AstrBot html_render 渲染 X 风格截图；both=同时发送文本和截图"
       },
       "twitter_screenshot_theme": {
         "description": "截图模式主题",
         "type": "string",
         "default": "dark",
         "options": ["dark", "light"],
-        "hint": "dark=黑色背景 X 风格；light=白色背景 X 风格，仅在截图模式下生效"
+        "hint": "dark=黑色背景 X 风格；light=白色背景 X 风格，在 screenshot 和 both 模式下生效"
       },
       "twitter_send_media_separately": {
         "description": "单独发送推文媒体资源",

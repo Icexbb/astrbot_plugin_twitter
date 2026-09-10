@@ -165,7 +165,7 @@ FxTwitter 时间线使用有限 cursor 分页并在本地按推文 ID 去重、�
 |--------|------|--------|------|
 | `twitter_use_node` | bool | `true` | 使用合并转发消息发送推文 |
 | `twitter_no_text` | bool | `false` | 推文含媒体时不输出文字内容 |
-| `twitter_text_render_mode` | string | `text` | 推文正文渲染方式：`text` 普通文字推送；`screenshot` 使用 AstrBot `html_render()` 渲染 X 暗色时间线风格截图 |
+| `twitter_text_render_mode` | string | `text` | 推文正文渲染方式：`text` 普通文字推送；`screenshot` 使用 AstrBot `html_render()` 渲染 X 风格截图；`both` 同时发送文本和截图，附加媒体只发送一次，截图失败时回退为文本。各模式均遵循 `twitter_no_text` 设置 |
 | `twitter_screenshot_theme` | string | `dark` | 截图模式主题：`dark` 黑色背景 / `light` 白色背景 |
 | `twitter_send_media_separately` | bool | `true` | 是否在正文或截图之外单独发送原图和视频；关闭后截图中的媒体预览不受影响 |
 | `twitter_image_quality` | string | `orig` | 推文图片质量：`large`（缩略图）/ `orig`（原图，默认） |
