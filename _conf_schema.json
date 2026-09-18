@@ -91,6 +91,14 @@
         "options": ["large", "orig"],
         "hint": "large=缩略图，orig=原图（默认）"
       },
+      "twitter_gif_media_type": {
+        "description": "GIF 媒体发送方式",
+        "type": "string",
+        "default": "video",
+        "options": ["video", "image"],
+        "labels": ["视频", "图片"],
+        "hint": "video=按视频发送（默认）；image=转换为循环 GIF 后按图片发送（需要系统可用 ffmpeg），转换失败时使用 GIF 封面"
+      },
       "twitter_video_max_size_mb": {
         "description": "视频直发大小上限（MB）",
         "type": "int",

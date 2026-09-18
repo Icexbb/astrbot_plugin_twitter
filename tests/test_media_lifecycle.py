@@ -158,6 +158,7 @@ def _message_settings(plugin_module, **overrides):
         "no_text": False,
         "send_media_separately": True,
         "include_tweet_link": False,
+        "gif_media_type": "video",
         "text_render_mode": "screenshot",
         "screenshot_theme": "dark",
         "video_max_size_mb": 256,
@@ -407,6 +408,157 @@ async def test_pre_downloaded_image_uses_from_bytes(plugin_module):
 
     assert isinstance(component, Image)
     assert component.data == image_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("gif_media_type", "expected_type"),
+    [("image", Image), ("video", Video)],
+)
+async def test_gif_media_type_routes_to_configured_component(
+    plugin_module, gif_media_type, expected_type
+):
+    class TwitterAPI:
+        async def get_remote_file_size(self, _url):
+            return None
+
+    service = plugin_module.TweetMessageService(
+        object(),
+        TwitterAPI(),
+        None,
+        _message_settings(
+            plugin_module,
+            gif_media_type=gif_media_type,
+            pre_download_media=False,
+            proxy=None,
+        ),
+    )
+    chain = []
+
+    await service.append_media_components(
+        chain,
+        [],
+        [],
+        gifs=["https://example.com/animation.gif"],
+    )
+
+    assert len(chain) == 1
+    assert isinstance(chain[0], expected_type)
+    assert chain[0].file == "https://example.com/animation.gif"
+
+
+@pytest.mark.asyncio
+async def test_gif_image_mode_uses_cover_for_video_only_gif_url(plugin_module):
+    service = plugin_module.TweetMessageService(
+        object(),
+        types.SimpleNamespace(get_remote_file_size=lambda _url: None),
+        None,
+        _message_settings(
+            plugin_module,
+            gif_media_type="image",
+            pre_download_media=False,
+            proxy=None,
+        ),
+    )
+    chain = []
+
+    await service.append_tweet_media_components(
+        chain,
+        {
+            "gifs": ["https://video.twimg.com/tweet_video/animation.mp4"],
+            "video_previews": [
+                {
+                    "media_type": "gif",
+                    "poster": "https://pbs.twimg.com/video_thumb/animation.jpg",
+                }
+            ],
+        },
+        "推文",
+    )
+
+    assert isinstance(chain[0], Image)
+    assert chain[0].file == "https://pbs.twimg.com/video_thumb/animation.jpg"
+
+
+@pytest.mark.asyncio
+async def test_gif_image_mode_converts_video_to_looping_gif(plugin_module):
+    class TwitterAPI:
+        async def download_media(self, url, **kwargs):
+            assert url == "https://video.twimg.com/tweet_video/animation.mp4"
+            assert kwargs["max_bytes"] > 0
+            return b"mp4-bytes"
+
+    service = plugin_module.TweetMessageService(
+        object(),
+        TwitterAPI(),
+        None,
+        _message_settings(
+            plugin_module,
+            gif_media_type="image",
+            pre_download_media=False,
+            proxy=None,
+        ),
+    )
+
+    async def convert(_data):
+        return b"looping-gif-bytes"
+
+    service.video_bytes_to_looping_gif = convert
+    chain = []
+    await service.append_tweet_media_components(
+        chain,
+        {
+            "gifs": ["https://video.twimg.com/tweet_video/animation.mp4"],
+            "video_previews": [
+                {
+                    "media_type": "gif",
+                    "poster": "https://pbs.twimg.com/video_thumb/animation.jpg",
+                }
+            ],
+        },
+        "推文",
+    )
+
+    assert isinstance(chain[0], Image)
+    assert chain[0].data == b"looping-gif-bytes"
+
+
+@pytest.mark.asyncio
+async def test_gif_image_mode_conversion_failure_falls_back_to_cover(
+    plugin_module,
+):
+    class TwitterAPI:
+        async def download_media(self, _url, **_kwargs):
+            raise RuntimeError("download failed")
+
+    service = plugin_module.TweetMessageService(
+        object(),
+        TwitterAPI(),
+        None,
+        _message_settings(
+            plugin_module,
+            gif_media_type="image",
+            pre_download_media=False,
+            proxy=None,
+        ),
+    )
+    chain = []
+    await service.append_tweet_media_components(
+        chain,
+        {
+            "gifs": ["https://video.twimg.com/tweet_video/animation.mp4"],
+            "video_previews": [
+                {
+                    "media_type": "gif",
+                    "poster": "https://pbs.twimg.com/video_thumb/animation.jpg",
+                }
+            ],
+        },
+        "推文",
+    )
+
+    assert isinstance(chain[0], Image)
+    assert chain[0].file == "https://pbs.twimg.com/video_thumb/animation.jpg"
 
 
 @pytest.mark.asyncio

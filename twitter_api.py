@@ -836,28 +836,56 @@ class TwitterAPI:
                 video, container
             ):
                 continue
-            for source in video.find_all("source"):
-                src = source.get("src", "")
-                if src:
-                    src = self._absolute_url(src)
-                    if src not in seen_urls:
-                        seen_urls.add(src)
-                        videos.append(src)
-
-            src = video.get("src", "")
-            if src:
-                src = self._absolute_url(src)
+            for src in self._extract_video_element_urls(video):
                 if src not in seen_urls:
                     seen_urls.add(src)
                     videos.append(src)
-
-            data_url = video.get("data-url", "")
-            if data_url:
-                data_url = self._absolute_url(data_url)
-                if data_url not in seen_urls:
-                    seen_urls.add(data_url)
-                    videos.append(data_url)
         return videos
+
+    def _extract_video_element_urls(self, video: Tag) -> list[str]:
+        urls: list[str] = []
+        for source in video.find_all("source"):
+            src = source.get("src", "")
+            if src:
+                urls.append(self._absolute_url(src))
+
+        for attribute in ("src", "data-url"):
+            src = video.get(attribute, "")
+            if src:
+                urls.append(self._absolute_url(src))
+
+        return list(dict.fromkeys(url for url in urls if url))
+
+    @staticmethod
+    def _looks_like_gif_url(url: str) -> bool:
+        return urlsplit(str(url or "")).path.lower().endswith(".gif")
+
+    def _is_gif_video_element(self, video: Tag, urls: list[str]) -> bool:
+        marker = " ".join(
+            str(video.get(attribute, ""))
+            for attribute in ("type", "data-type", "data-media-type", "class")
+        ).lower()
+        return "gif" in marker or any(self._looks_like_gif_url(url) for url in urls)
+
+    def _extract_gif_urls(
+        self, container: Tag, include_nested_quotes: bool = False
+    ) -> list[str]:
+        """提取可识别为 GIF 的媒体 URL，兼容 Nitter 显式标记和 .gif URL。"""
+        gifs: list[str] = []
+        seen_urls: set[str] = set()
+        for video in container.select("div.attachment video"):
+            if not include_nested_quotes and self._is_nested_quote_element(
+                video, container
+            ):
+                continue
+            urls = self._extract_video_element_urls(video)
+            if not self._is_gif_video_element(video, urls):
+                continue
+            for url in urls:
+                if url not in seen_urls:
+                    seen_urls.add(url)
+                    gifs.append(url)
+        return gifs
 
     def _extract_video_previews(
         self, container: Tag, include_nested_quotes: bool = False
@@ -874,7 +902,12 @@ class TwitterAPI:
             poster = self._absolute_url(video.get("poster", ""))
             if poster and poster not in seen_posters:
                 seen_posters.add(poster)
-                previews.append({"poster": poster, "duration": ""})
+                preview = {"poster": poster, "duration": ""}
+                if self._is_gif_video_element(
+                    video, self._extract_video_element_urls(video)
+                ):
+                    preview["media_type"] = "gif"
+                previews.append(preview)
 
         overlay_elems = container.select("div.video-overlay")
         for overlay in overlay_elems:
@@ -960,6 +993,7 @@ class TwitterAPI:
             "text": "",
             "images": [],
             "videos": [],
+            "gifs": [],
             "video_previews": [],
             "quote": None,
             "retweet": None,
@@ -1085,10 +1119,10 @@ class TwitterAPI:
 
     def _extract_fxtwitter_media(
         self, status: dict
-    ) -> tuple[list[str], list[str], list[dict]]:
+    ) -> tuple[list[str], list[str], list[str], list[dict]]:
         media = status.get("media") or {}
         if not isinstance(media, dict):
-            return [], [], []
+            return [], [], [], []
 
         all_entries = media.get("all") or []
         photos = media.get("photos") or []
@@ -1115,19 +1149,23 @@ class TwitterAPI:
                 image_urls.append(image_url)
 
         video_urls: list[str] = []
+        gif_urls: list[str] = []
         video_previews: list[dict] = []
         for video in self._deduplicate_media_entries(videos):
             video_url = self._select_fxtwitter_video_url(video)
-            if video_url and video_url not in video_urls:
-                video_urls.append(video_url)
+            media_type = str(video.get("type") or "").strip().lower()
+            target_urls = gif_urls if media_type == "gif" else video_urls
+            if video_url and video_url not in target_urls:
+                target_urls.append(video_url)
             poster = str(video.get("thumbnail_url") or "").strip()
             if poster and not any(item.get("poster") == poster for item in video_previews):
-                video_previews.append(
-                    {
-                        "poster": poster,
-                        "duration": self._format_duration(video.get("duration")),
-                    }
-                )
+                preview = {
+                    "poster": poster,
+                    "duration": self._format_duration(video.get("duration")),
+                }
+                if media_type == "gif":
+                    preview["media_type"] = "gif"
+                video_previews.append(preview)
 
         external = media.get("external") or {}
         if isinstance(external, dict):
@@ -1140,9 +1178,9 @@ class TwitterAPI:
                 f"检测到 FxTwitter 直播/广播 @{(status.get('author') or {}).get('screen_name', '')}/"
                 f"{status.get('id', '')}，过滤媒体内容"
             )
-            return [], [], []
+            return [], [], [], []
 
-        return image_urls, video_urls, video_previews
+        return image_urls, video_urls, gif_urls, video_previews
 
     def _adapt_fxtwitter_quote(self, status: Any) -> Optional[dict]:
         if not isinstance(status, dict) or status.get("type") != "status":
@@ -1150,7 +1188,7 @@ class TwitterAPI:
         author = status.get("author") or {}
         if not isinstance(author, dict):
             author = {}
-        images, videos, previews = self._extract_fxtwitter_media(status)
+        images, videos, gifs, previews = self._extract_fxtwitter_media(status)
         return {
             "author": str(author.get("name") or author.get("screen_name") or ""),
             "username": str(author.get("screen_name") or "").lstrip("@"),
@@ -1161,6 +1199,7 @@ class TwitterAPI:
             "text": str(status.get("text") or ""),
             "images": images,
             "videos": videos,
+            "gifs": gifs,
             "video_previews": previews,
         }
 
@@ -1173,7 +1212,7 @@ class TwitterAPI:
         username = str(author.get("screen_name") or fallback_username).lstrip("@")
         tweet_id = str(status.get("id") or fallback_id)
         result = self._empty_tweet_result(username, tweet_id)
-        images, videos, previews = self._extract_fxtwitter_media(status)
+        images, videos, gifs, previews = self._extract_fxtwitter_media(status)
         reposted_by = status.get("reposted_by") or {}
         retweet = None
         if isinstance(reposted_by, dict) and (
@@ -1211,6 +1250,7 @@ class TwitterAPI:
                 "text": str(status.get("text") or ""),
                 "images": images,
                 "videos": videos,
+                "gifs": gifs,
                 "video_previews": previews,
                 "quote": self._adapt_fxtwitter_quote(status.get("quote")),
                 "retweet": retweet,
@@ -1304,7 +1344,11 @@ class TwitterAPI:
             #   1) mp4播放启用: <video><source src=""></video>
             #   2) m3u8/vmap格式: <video data-url=""> (无src/source)
             #   3) 播放被禁用: 仅有 <img> 缩略图 + <div class="video-overlay">
-            result["videos"] = self._extract_videos(main_tweet)
+            result["gifs"] = self._extract_gif_urls(main_tweet)
+            all_videos = self._extract_videos(main_tweet)
+            result["videos"] = [
+                url for url in all_videos if url not in result["gifs"]
+            ]
             result["video_previews"] = self._extract_video_previews(main_tweet)
 
             # 检测直播推文并过滤
@@ -1316,13 +1360,14 @@ class TwitterAPI:
                     f"过滤所有媒体内容"
                 )
                 result["videos"] = []
+                result["gifs"] = []
                 result["images"] = []
                 result["video_previews"] = []
 
             # 检测视频附件但未提取到视频URL的情况
             if not is_live_stream:
                 video_overlays = main_tweet.select("div.video-overlay")
-                if video_overlays and not result["videos"]:
+                if video_overlays and not result["videos"] and not result["gifs"]:
                     logger.warning(
                         f"检测到视频附件但未提取到视频URL，"
                         f"可能 Nitter 实例({self.nitter_url})禁用了视频播放。"
@@ -1341,6 +1386,14 @@ class TwitterAPI:
                 quote_href = quote_link.get("href", "") if quote_link else ""
                 quote_id_match = re.search(r"/status/(\d+)", quote_href)
                 quote_live_stream = self._contains_live_stream(
+                    quote_elem,
+                    include_nested_quotes=True,
+                )
+                quote_gifs = self._extract_gif_urls(
+                    quote_elem,
+                    include_nested_quotes=True,
+                )
+                quote_videos = self._extract_videos(
                     quote_elem,
                     include_nested_quotes=True,
                 )
@@ -1370,10 +1423,12 @@ class TwitterAPI:
                     "videos": (
                         []
                         if quote_live_stream
-                        else self._extract_videos(
-                            quote_elem,
-                            include_nested_quotes=True,
-                        )
+                        else [url for url in quote_videos if url not in quote_gifs]
+                    ),
+                    "gifs": (
+                        []
+                        if quote_live_stream
+                        else quote_gifs
                     ),
                     "video_previews": (
                         []

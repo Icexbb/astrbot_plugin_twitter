@@ -98,6 +98,24 @@ def test_adapts_images_and_selects_highest_bitrate_video(api_module):
     ]
 
 
+def test_adapts_gif_as_separate_media_type(api_module):
+    api = api_module.TwitterAPI(provider="fxtwitter")
+    status = _fixture("fxtwitter_video_status.json")
+    status["media"]["videos"][0]["type"] = "gif"
+
+    result = api._adapt_fxtwitter_status(status)
+
+    assert result["videos"] == []
+    assert result["gifs"] == ["https://video.twimg.com/video/high.mp4"]
+    assert result["video_previews"] == [
+        {
+            "poster": "https://pbs.twimg.com/video_thumb/v1.jpg",
+            "duration": "01:05",
+            "media_type": "gif",
+        }
+    ]
+
+
 def test_adapts_retweet_quote_sensitive_and_missing_fields(api_module):
     api = api_module.TwitterAPI(provider="fxtwitter")
     retweet = api._adapt_fxtwitter_status(_fixture("fxtwitter_retweet_status.json"))

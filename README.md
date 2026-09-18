@@ -169,6 +169,7 @@ FxTwitter 时间线使用有限 cursor 分页并在本地按推文 ID 去重、�
 | `twitter_screenshot_theme` | string | `dark` | 截图模式主题：`dark` 黑色背景 / `light` 白色背景 |
 | `twitter_send_media_separately` | bool | `true` | 是否在正文或截图之外单独发送原图和视频；关闭后截图中的媒体预览不受影响 |
 | `twitter_image_quality` | string | `orig` | 推文图片质量：`large`（缩略图）/ `orig`（原图，默认） |
+| `twitter_gif_media_type` | string | `video` | GIF 媒体发送方式：`video` 按视频组件发送（默认）/ `image` 转换为循环 GIF 后按图片组件发送；需要系统可用 `ffmpeg`，转换失败时使用 GIF 封面 |
 | `twitter_video_max_size_mb` | int | `256` | 视频直发大小上限；超过后改为发送说明和视频链接|
 | `twitter_collective_forward` | bool | `false` | 集体转发模式（多推主推文合并为一条转发消息） |
 | `twitter_collective_max_authors` | int | `5` | 集体转发时单条消息包含的最大推主数 |

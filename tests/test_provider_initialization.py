@@ -630,6 +630,29 @@ def test_flat_and_grouped_provider_config_are_compatible(plugin_module):
     assert defaulted.link_recognition_mode == "auto"
 
 
+@pytest.mark.parametrize("grouped", [False, True])
+def test_gif_media_type_config_supports_flat_and_grouped(
+    plugin_module, monkeypatch, grouped
+):
+    monkeypatch.setattr(plugin_module, "TwitterAPI", lambda **kwargs: object())
+    config = {"twitter_gif_media_type": "image"}
+    if grouped:
+        config = {"message_format": config}
+
+    plugin = plugin_module.TwitterPlugin(object(), config)
+
+    assert plugin.gif_media_type == "image"
+    assert plugin.message_service.settings.gif_media_type == "image"
+
+
+@pytest.mark.parametrize("value", [None, "", "invalid"])
+def test_gif_media_type_defaults_to_video(plugin_module, value):
+    config = {} if value is None else {"twitter_gif_media_type": value}
+    plugin = plugin_module.TwitterPlugin(object(), config)
+
+    assert plugin.gif_media_type == "video"
+
+
 @pytest.mark.parametrize("config,expected", [
     ({}, 60),
     ({"twitter_translate_timeout_seconds": 15}, 15),

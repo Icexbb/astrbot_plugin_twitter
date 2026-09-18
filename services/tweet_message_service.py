@@ -6,6 +6,7 @@ import copy
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
@@ -23,6 +24,8 @@ HtmlRender = Callable[..., Awaitable[str]]
 # NapCat 等 OneBot 实现限制单条 WebSocket 消息大小（NapCat 为 50MB），
 # base64 编码使体积膨胀约 1/3，代理预下载视频时预留安全余量。
 VIDEO_PRE_DOWNLOAD_MAX_BYTES = 30 * 1024 * 1024
+GIF_CONVERSION_TIMEOUT_SECONDS = 30
+GIF_CONVERSION_MAX_OUTPUT_BYTES = 20 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +35,7 @@ class TweetMessageSettings:
     no_text: bool
     send_media_separately: bool
     include_tweet_link: bool
+    gif_media_type: str
     text_render_mode: str
     screenshot_theme: str
     video_max_size_mb: int
@@ -106,10 +110,52 @@ class TweetMessageService:
     @staticmethod
     def tweet_has_media(tweet_info: dict) -> bool:
         """判断主贴或引用帖是否包含媒体。"""
-        if tweet_info.get("images") or tweet_info.get("videos"):
+        if (
+            tweet_info.get("images")
+            or tweet_info.get("videos")
+            or tweet_info.get("gifs")
+        ):
             return True
         quote = tweet_info.get("quote") or {}
-        return bool(quote.get("images") or quote.get("videos"))
+        return bool(
+            quote.get("images")
+            or quote.get("videos")
+            or quote.get("gifs")
+        )
+
+    def _route_gifs(self, images: list, videos: list, gifs: list) -> tuple[list, list]:
+        """按配置将 GIF 媒体加入图片或视频列表。"""
+        routed_images = list(images or [])
+        routed_videos = list(videos or [])
+        if self.settings.gif_media_type == "image":
+            routed_images.extend(gifs or [])
+        else:
+            routed_videos.extend(gifs or [])
+        return routed_images, routed_videos
+
+    @staticmethod
+    def _is_image_media_url(url: str) -> bool:
+        path = urlsplit(str(url or "")).path.lower()
+        return path.endswith((".gif", ".jpg", ".jpeg", ".png", ".webp", ".avif"))
+
+    def _gif_image_urls(self, media_info: dict) -> list[str]:
+        """为图片模式选择 GIF 原图，必要时回退到 FxTwitter 封面图。"""
+        gifs = list(media_info.get("gifs") or [])
+        posters = [
+            str(preview.get("poster") or "").strip()
+            for preview in media_info.get("video_previews") or []
+            if isinstance(preview, dict)
+            and preview.get("media_type") == "gif"
+            and str(preview.get("poster") or "").strip()
+        ]
+        result: list[str] = []
+        for gif in gifs:
+            gif = str(gif or "").strip()
+            if self._is_image_media_url(gif) or not posters:
+                result.append(gif)
+            else:
+                result.append(posters.pop(0))
+        return result
 
     @staticmethod
     def is_stream_video_url(video_url: str) -> bool:
@@ -153,10 +199,14 @@ class TweetMessageService:
         images: list,
         videos: list,
         context_label: str = "推文",
+        gifs: list | None = None,
+        gif_image_entries: list[tuple[str, str]] | None = None,
     ) -> None:
         """把图片和视频追加到消息链，供主贴和引用帖复用。"""
         if not self.settings.send_media_separately:
             return
+
+        images, videos = self._route_gifs(images, videos, gifs or [])
 
         for img_url in images:
             try:
@@ -165,6 +215,19 @@ class TweetMessageService:
                     chain.append(img_comp)
             except Exception as exc:
                 logger.warning(f"添加{context_label}图片失败: {img_url}, {exc}")
+
+        for gif_url, poster_url in gif_image_entries or []:
+            try:
+                gif_comp = await self.build_gif_image_component(
+                    gif_url,
+                    poster_url,
+                )
+                if gif_comp is not None:
+                    chain.append(gif_comp)
+            except Exception as exc:
+                logger.warning(
+                    f"添加{context_label} GIF 失败: {gif_url}, {exc}"
+                )
 
         for video in videos:
             video_url = str(video)
@@ -195,6 +258,38 @@ class TweetMessageService:
                 )
                 chain.append(Comp.Plain(str(f"\n视频: {video_url}")))
 
+    async def append_tweet_media_components(
+        self,
+        chain: list,
+        media_info: dict,
+        context_label: str,
+    ) -> None:
+        """按推文媒体字段追加组件，兼容未扩展 GIF 参数的测试替身。"""
+        gifs = media_info.get("gifs") or []
+        images = media_info.get("images") or []
+        kwargs = {"context_label": context_label}
+        if gifs:
+            if self.settings.gif_media_type == "image":
+                gif_urls = list(gifs)
+                posters = [
+                    str(preview.get("poster") or "").strip()
+                    for preview in media_info.get("video_previews") or []
+                    if isinstance(preview, dict)
+                    and preview.get("media_type") == "gif"
+                ]
+                kwargs["gif_image_entries"] = [
+                    (gif_url, posters[index] if index < len(posters) else "")
+                    for index, gif_url in enumerate(gif_urls)
+                ]
+            else:
+                kwargs["gifs"] = gifs
+        await self.append_media_components(
+            chain,
+            images,
+            media_info.get("videos") or [],
+            **kwargs,
+        )
+
     async def build_image_component(self, img_url: str) -> Comp.Image | None:
         """根据代理配置选择合适的图片组件构建方式。"""
         img_url = str(img_url or "").strip()
@@ -216,6 +311,77 @@ class TweetMessageService:
             return Comp.Image.fromURL(img_url)
 
         return Comp.Image.fromBytes(data)
+
+    async def build_gif_image_component(
+        self,
+        gif_url: str,
+        poster_url: str = "",
+    ) -> Comp.Image | None:
+        """将 FxTwitter 提供的 MP4 形式 GIF 转为循环 GIF 图片。"""
+        gif_url = str(gif_url or "").strip()
+        poster_url = str(poster_url or "").strip()
+        if not gif_url:
+            return None
+        if self._is_image_media_url(gif_url):
+            return await self.build_image_component(gif_url)
+
+        try:
+            video_data = await self.twitter_api.download_media(
+                gif_url,
+                timeout=GIF_CONVERSION_TIMEOUT_SECONDS,
+                max_bytes=VIDEO_PRE_DOWNLOAD_MAX_BYTES,
+            )
+            gif_data = await self.video_bytes_to_looping_gif(video_data)
+            return Comp.Image.fromBytes(gif_data)
+        except Exception as exc:
+            logger.warning(
+                f"GIF 视频转换失败 {gif_url}: {type(exc).__name__}，回退到封面图"
+            )
+
+        if poster_url:
+            try:
+                return await self.build_image_component(poster_url)
+            except Exception as exc:
+                logger.warning(f"GIF 封面发送失败 {poster_url}: {exc}")
+        return Comp.Image.fromURL(gif_url)
+
+    @staticmethod
+    async def video_bytes_to_looping_gif(video_data: bytes) -> bytes:
+        """使用 ffmpeg 将视频字节转为循环播放的 GIF 字节。"""
+        process = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-vf",
+            "fps=12,scale='min(480,iw)':-2:flags=lanczos",
+            "-loop",
+            "0",
+            "-f",
+            "gif",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            output, error = await asyncio.wait_for(
+                process.communicate(video_data),
+                timeout=GIF_CONVERSION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            process.kill()
+            await process.communicate()
+            raise RuntimeError("ffmpeg GIF 转换超时") from None
+
+        if process.returncode != 0 or not output:
+            detail = error.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(detail or "ffmpeg GIF 转换失败")
+        if len(output) > GIF_CONVERSION_MAX_OUTPUT_BYTES:
+            raise ValueError("转换后的 GIF 超出大小限制")
+        return output
 
     async def build_video_component(
         self,
@@ -429,7 +595,6 @@ class TweetMessageService:
             sub_config = {"r18": True, "media": False, "status": True}
 
         text = str(translated_text or tweet_info.get("text") or "")
-        images = tweet_info.get("images") or []
         quote = tweet_info.get("quote")
         tweet_id = str(tweet_info.get("tweet_id") or "")
         author_username = str(tweet_info.get("username") or username)
@@ -491,18 +656,14 @@ class TweetMessageService:
             self.append_to_last_plain(chain, "\n\n".join(text_sections))
 
         if quote:
-            await self.append_media_components(
-                chain,
-                quote.get("images") or [],
-                quote.get("videos") or [],
-                context_label="引用推文",
+            await self.append_tweet_media_components(
+                chain, quote, "引用推文"
             )
 
-        await self.append_media_components(
+        await self.append_tweet_media_components(
             chain,
-            images,
-            tweet_info.get("videos") or [],
-            context_label="推文",
+            tweet_info,
+            "推文",
         )
 
         return [component for component in chain if component is not None]
@@ -634,18 +795,14 @@ class TweetMessageService:
 
         quote = tweet_info.get("quote") or None
         if quote:
-            await self.append_media_components(
-                chain,
-                quote.get("images") or [],
-                quote.get("videos") or [],
-                context_label="引用推文",
+            await self.append_tweet_media_components(
+                chain, quote, "引用推文"
             )
 
-        await self.append_media_components(
+        await self.append_tweet_media_components(
             chain,
-            tweet_info.get("images") or [],
-            tweet_info.get("videos") or [],
-            context_label="推文",
+            tweet_info,
+            "推文",
         )
 
         return [component for component in chain if component is not None]
@@ -653,6 +810,7 @@ class TweetMessageService:
     async def prepare_screenshot_media(self, tweet_info: dict) -> dict:
         """头像始终走缓存，其他截图媒体仍按原代理预下载开关处理。"""
         result = copy.deepcopy(tweet_info)
+        self._route_gifs_in_tweet_info(result)
         for author in (result, result.get("quote") or {}):
             author["avatar"] = (
                 await self.avatar_cache.get(author.get("avatar"))
@@ -693,6 +851,26 @@ class TweetMessageService:
                             preview["poster"] = data_uri
 
         return result
+
+    def _route_gifs_in_tweet_info(self, tweet_info: dict) -> None:
+        """为截图上下文按配置路由 GIF，并移除内部临时字段。"""
+        for media_info in (tweet_info, tweet_info.get("quote") or {}):
+            gifs = list(media_info.get("gifs", []) or [])
+            if self.settings.gif_media_type == "image":
+                media_info["images"] = list(media_info.get("images") or [])
+                media_info["images"].extend(self._gif_image_urls(media_info))
+                media_info["video_previews"] = [
+                    preview
+                    for preview in media_info.get("video_previews") or []
+                    if not (
+                        isinstance(preview, dict)
+                        and preview.get("media_type") == "gif"
+                    )
+                ]
+            else:
+                media_info["videos"] = list(media_info.get("videos") or [])
+                media_info.setdefault("videos", []).extend(gifs)
+            media_info.pop("gifs", None)
 
     async def download_to_data_uri_safe(self, url: str) -> str | None:
         """安全地将远程 URL 下载并转为 data URI，失败返回 None。"""

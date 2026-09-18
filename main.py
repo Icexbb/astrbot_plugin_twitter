@@ -314,6 +314,19 @@ class TwitterPlugin(Star):
             )
             or "orig"
         ).strip()
+        self.gif_media_type = str(
+            self._cfg(
+                "message_format",
+                "twitter_gif_media_type",
+                "video",
+            )
+            or "video"
+        ).strip().lower()
+        if self.gif_media_type not in ("image", "video"):
+            logger.warning(
+                f"未知 GIF 媒体发送方式: {self.gif_media_type}，已回退为 video"
+            )
+            self.gif_media_type = "video"
         self.pre_download_media = bool(
             self._cfg("basic", "twitter_pre_download_media", False)
         )
@@ -352,6 +365,7 @@ class TwitterPlugin(Star):
                 no_text=self.no_text,
                 send_media_separately=self.send_media_separately,
                 include_tweet_link=self.include_tweet_link,
+                gif_media_type=self.gif_media_type,
                 text_render_mode=self.text_render_mode,
                 screenshot_theme=self.screenshot_theme,
                 video_max_size_mb=self.video_max_size_mb,
